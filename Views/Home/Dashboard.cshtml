@@ -1,0 +1,696 @@
+@model YourApp.Models.AttendanceViewModel
+@{
+    ViewData["Title"] = "Attendance Dashboard";
+    double barMax = 600.0;
+    Func<double?, string> barWidth = (m) =>
+        m == null ? "0" : Math.Min(100, (m.Value / barMax) * 100).ToString("F1");
+    Func<double?, string> barColor = (m) => {
+        if (m == null) return "#94a3b8";
+        if (m.Value >= 480) return "#22c55e";
+        if (m.Value >= 360) return "#f59e0b";
+        return "#f43f5e";
+    };
+
+    // ── Chart data ───────────────────────────────────────────────────────────
+    var allValidDays = Model.Months
+        .SelectMany(m => m.Days)
+        .Where(d => !d.IsSkipped && d.TotalMinutes.HasValue)
+        .OrderBy(d => d.Date)
+        .ToList();
+
+    string chartLabels  = string.Join(",", allValidDays.Select(d => $"\"{d.Date:dd MMM}\""));
+    string chartData    = string.Join(",", allValidDays.Select(d => (d.TotalMinutes!.Value / 60.0).ToString("F2", System.Globalization.CultureInfo.InvariantCulture)));
+    string monthLabels  = string.Join(",", Model.Months.Select(m => $"\"{m.MonthLabel}\""));
+    string monthAvgData = string.Join(",", Model.Months.Select(m =>
+        m.AverageMinutes.HasValue ? (m.AverageMinutes.Value / 60.0).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) : "0"));
+
+    var punctualityData = allValidDays
+        .Where(d => d.Pairs.Count > 0 && d.Pairs[0].In.HasValue)
+        .Select(d => { var t = d.Pairs[0].In!.Value; return (d.Date, Min: t.Hours * 60 + t.Minutes); })
+        .ToList();
+    string punctLabels = string.Join(",", punctualityData.Select(p => $"\"{p.Date:dd MMM}\""));
+    string punctData   = string.Join(",", punctualityData.Select(p => p.Min.ToString()));
+
+    // ── Hours distribution ───────────────────────────────────────────────────
+    int countGreen = allValidDays.Count(d => d.TotalMinutes >= 480);
+    int countAmber = allValidDays.Count(d => d.TotalMinutes >= 360 && d.TotalMinutes < 480);
+    int countRose  = allValidDays.Count(d => d.TotalMinutes < 360);
+
+    // ── Streak ───────────────────────────────────────────────────────────────
+    int maxStreak = 0, curStreak = 0;
+    DateTime? prev = null;
+    foreach (var d in allValidDays) {
+        if (prev.HasValue && (d.Date - prev.Value).Days == 1) curStreak++;
+        else curStreak = 1;
+        if (curStreak > maxStreak) maxStreak = curStreak;
+        prev = d.Date;
+    }
+
+    // ── Total hours ──────────────────────────────────────────────────────────
+    double totalHours = allValidDays.Sum(d => d.TotalMinutes!.Value) / 60.0;
+
+    // ── Office hours: Mon–Fri 10:00–19:00 (9h) · Sat 10:00–17:00 (7h) ────────
+    TimeSpan officeStart      = new TimeSpan(10, 0, 0);
+    TimeSpan officeEndWeekday = new TimeSpan(19, 0, 0);
+    TimeSpan officeEndSat     = new TimeSpan(17, 0, 0);
+    Func<DateTime, TimeSpan> getOfficeEnd      = (dt) => dt.DayOfWeek == DayOfWeek.Saturday ? officeEndSat : officeEndWeekday;
+    Func<DateTime, int>      getOfficeTotalMin = (dt) => dt.DayOfWeek == DayOfWeek.Saturday ? 420 : 540;
+
+    int countLate = allValidDays.Count(d =>
+        d.Pairs.Count > 0 && d.Pairs[0].In.HasValue && d.Pairs[0].In.Value > officeStart);
+
+    int countEarlyLeave = allValidDays.Count(d => {
+        var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out;
+        return lo.HasValue && lo.Value < getOfficeEnd(d.Date);
+    });
+
+    int countOnTime = allValidDays.Count(d => {
+        var fi = d.Pairs.FirstOrDefault(p => p.In.HasValue)?.In;
+        var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out;
+        return fi.HasValue && lo.HasValue && fi.Value <= officeStart && lo.Value >= getOfficeEnd(d.Date);
+    });
+
+    int countPerfect = allValidDays.Count(d => {
+        var fi = d.Pairs.FirstOrDefault(p => p.In.HasValue)?.In;
+        var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out;
+        return fi.HasValue && lo.HasValue && fi.Value <= officeStart && lo.Value >= getOfficeEnd(d.Date) && d.TotalMinutes >= getOfficeTotalMin(d.Date);
+    });
+
+    int countOvertime = allValidDays.Count(d => {
+        var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out;
+        return lo.HasValue && lo.Value > getOfficeEnd(d.Date);
+    });
+
+    double totalOvertimeMins = allValidDays
+        .Where(d => { var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out; return lo.HasValue && lo.Value > getOfficeEnd(d.Date); })
+        .Sum(d => (d.Pairs.Last(p => p.Out.HasValue).Out!.Value - getOfficeEnd(d.Date)).TotalMinutes);
+    string totalOvertimeDisplay = $"{(int)(totalOvertimeMins / 60)}h {(int)(totalOvertimeMins % 60):D2}m";
+
+    var lateMins = allValidDays
+        .Where(d => d.Pairs.Count > 0 && d.Pairs[0].In.HasValue && d.Pairs[0].In.Value > officeStart)
+        .Select(d => (d.Pairs[0].In!.Value - officeStart).TotalMinutes).ToList();
+    string avgLateDisplay = lateMins.Count > 0 ? $"avg {(int)lateMins.Average()}m late" : "never late";
+
+    double complianceRate = allValidDays.Count > 0 ? (countPerfect * 100.0 / allValidDays.Count) : 0;
+}
+
+<div id="printArea">
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header class="header fade-in">
+    <div class="header-left">
+        <span class="header-label">Attendance Report</span>
+        <span class="header-name">@Model.EmployeeName</span>
+        <span class="header-code">@Model.EmployeeCode</span>
+    </div>
+    <div class="header-right">
+        <span class="header-badge">
+            @Model.Months.First().Days.Min(d => d.Date).ToString("dd MMM yyyy")
+            &nbsp;→&nbsp;
+            @Model.Months.Last().Days.Max(d => d.Date).ToString("dd MMM yyyy")
+        </span>
+        <button class="btn-export no-print" onclick="exportExcel()">
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6zm-1 1.5L18.5 9H13V3.5zM8 17.5l1.5-2.5L8 12.5h1.3l.95 1.7.95-1.7H12.5l-1.5 2.5 1.5 2.5h-1.3l-.95-1.7-.95 1.7H8zm6.5 0V12.5h1.1v4h2.2v.95H14.5z"/>
+            </svg>
+            Export Excel
+        </button>
+    </div>
+</header>
+
+<!-- ── Summary cards ──────────────────────────────────────────────────── -->
+<div class="summary-grid fade-in" style="animation-delay:60ms">
+    <div class="card">
+        <span class="card-label">Total Work Days</span>
+        <span class="card-value accent">@Model.TotalWorkDays</span>
+        <span class="card-sub">valid days recorded</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Total Hours Worked</span>
+        <span class="card-value green">@totalHours.ToString("F0")h</span>
+        <span class="card-sub">across all valid days</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Overall Daily Avg</span>
+        <span class="card-value green">@Model.OverallAverageDisplay</span>
+        <span class="card-sub">average time in per day</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Best Streak</span>
+        <span class="card-value accent">@maxStreak <span style="font-size:1rem;font-weight:600">days</span></span>
+        <span class="card-sub">consecutive present days</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Days ≥ 8h</span>
+        <span class="card-value green">@countGreen</span>
+        <span class="card-sub">full days</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Days 6 – 8h</span>
+        <span class="card-value amber">@countAmber</span>
+        <span class="card-sub">moderate days</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Days &lt; 6h</span>
+        <span class="card-value rose">@countRose</span>
+        <span class="card-sub">short days</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Skipped Rows</span>
+        <span class="card-value @(Model.TotalSkipped > 0 ? "rose" : "green")">@Model.TotalSkipped</span>
+        <span class="card-sub">incomplete pairs</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Late Arrivals</span>
+        <span class="card-value @(countLate > 0 ? "rose" : "green")">@countLate</span>
+        <span class="card-sub">after 10:00 · @avgLateDisplay</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Early Departures</span>
+        <span class="card-value @(countEarlyLeave > 0 ? "amber" : "green")">@countEarlyLeave</span>
+        <span class="card-sub">left before office end (19:00 / 17:00 Sat)</span>
+    </div>
+    <div class="card">
+        <span class="card-label">On-Time Days</span>
+        <span class="card-value green">@countOnTime</span>
+        <span class="card-sub">in ≤10:00 · out ≥19:00 (17:00 Sat)</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Perfect Days</span>
+        <span class="card-value accent">@countPerfect</span>
+        <span class="card-sub">on-time + full shift (9h / 7h Sat)</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Overtime Days</span>
+        <span class="card-value accent">@countOvertime</span>
+        <span class="card-sub">past office end · @totalOvertimeDisplay total</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Compliance Rate</span>
+        <span class="card-value @(complianceRate >= 80 ? "green" : complianceRate >= 50 ? "amber" : "rose")">
+            @complianceRate.ToString("F0")%
+        </span>
+        <span class="card-sub">perfect days / total valid</span>
+    </div>
+</div>
+
+<!-- ── Charts row 1: Trend + Donut ───────────────────────────────────── -->
+<div class="charts-row fade-in" style="animation-delay:120ms">
+    <div class="chart-card">
+        <div class="chart-title">Daily Hours Trend — All Months</div>
+        <div class="chart-wrap" style="height:220px"><canvas id="trendChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+        <div class="chart-title">Day Distribution</div>
+        <div class="chart-wrap" style="height:220px"><canvas id="donutChart"></canvas></div>
+    </div>
+</div>
+
+<!-- ── Charts row 2: Monthly avg + Punctuality + Compliance ─────────── -->
+<div class="charts-row-3 fade-in" style="animation-delay:180ms">
+    <div class="chart-card">
+        <div class="chart-title">Monthly Average Hours</div>
+        <div class="chart-wrap" style="height:200px"><canvas id="monthBarChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+        <div class="chart-title">Arrival Time per Day</div>
+        <div class="chart-wrap" style="height:200px"><canvas id="punctChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+        <div class="chart-title">Compliance Breakdown</div>
+        <div class="chart-wrap" style="height:200px"><canvas id="complianceChart"></canvas></div>
+    </div>
+</div>
+
+<!-- ── Month filter ───────────────────────────────────────────────────── -->
+<div class="filter-bar fade-in no-print" style="animation-delay:200ms">
+    <span class="filter-label">Filter</span>
+    <button class="filter-btn active" data-filter="all" onclick="filterMonth('all', this)">All Months</button>
+    @foreach (var month in Model.Months)
+    {
+        <button class="filter-btn"
+                data-filter="@($"{month.Year}-{month.Month}")"
+                onclick="filterMonth('@($"{month.Year}-{month.Month}")', this)">
+            @month.MonthLabel
+        </button>
+    }
+</div>
+
+<!-- ── Month sections ─────────────────────────────────────────────────── -->
+@foreach (var month in Model.Months)
+{
+    double attendanceRate = month.TotalDays > 0 ? (month.ValidDayCount * 100.0 / month.TotalDays) : 0;
+    int mLate  = month.Days.Count(d => !d.IsSkipped && d.Pairs.Count > 0 && d.Pairs[0].In.HasValue && d.Pairs[0].In.Value > officeStart);
+    int mEarly = month.Days.Count(d => { if (d.IsSkipped) return false; var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out; return lo.HasValue && lo.Value < getOfficeEnd(d.Date); });
+    int mOT    = month.Days.Count(d => { if (d.IsSkipped) return false; var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out; return lo.HasValue && lo.Value > getOfficeEnd(d.Date); });
+    int mPerf  = month.Days.Count(d => { if (d.IsSkipped) return false; var fi = d.Pairs.FirstOrDefault(p => p.In.HasValue)?.In; var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out; return fi.HasValue && lo.HasValue && fi.Value <= officeStart && lo.Value >= getOfficeEnd(d.Date) && d.TotalMinutes >= getOfficeTotalMin(d.Date); });
+
+    <section class="month-section"
+             data-month="@($"{month.Year}-{month.Month}")"
+             style="animation-delay:@(Model.Months.IndexOf(month) * 80)ms">
+
+        <div class="month-header">
+            <span class="month-title">@month.MonthLabel</span>
+            <span class="month-pill">@month.ValidDayCount valid days</span>
+            @if (month.SkippedCount > 0)
+            {
+                <span class="month-pill" style="color:var(--rose);border-color:rgba(244,63,94,.3)">
+                    @month.SkippedCount skipped
+                </span>
+            }
+        </div>
+
+        <div class="month-stats">
+            <div class="ms-item">
+                <span class="ms-label">Daily Average</span>
+                <span class="ms-val" style="color:var(--accent2)">@month.AverageDisplay</span>
+            </div>
+            <div class="ms-item">
+                <span class="ms-label">Best Day</span>
+                <span class="ms-val" style="color:var(--green)">@month.MaxDisplay</span>
+            </div>
+            <div class="ms-item">
+                <span class="ms-label">Shortest Day</span>
+                <span class="ms-val" style="color:var(--amber)">@month.MinDisplay</span>
+            </div>
+            <div class="ms-item">
+                <span class="ms-label">Valid / Total</span>
+                <span class="ms-val">@month.ValidDayCount / @month.TotalDays</span>
+            </div>
+            <div class="ms-item att-rate-wrap">
+                <span class="ms-label">Attendance Rate</span>
+                <span class="ms-val" style="color:var(--accent2)">@attendanceRate.ToString("F0")%</span>
+                <div class="att-rate-bar">
+                    <div class="att-rate-fill" style="width:@attendanceRate.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%"></div>
+                </div>
+            </div>
+            <div class="ms-item">
+                <span class="ms-label">Days ≥ 8h</span>
+                <span class="ms-val" style="color:var(--green)">@month.Days.Count(d => !d.IsSkipped && d.TotalMinutes >= 480)</span>
+            </div>
+            <div class="ms-item">
+                <span class="ms-label">Days &lt; 6h</span>
+                <span class="ms-val" style="color:var(--rose)">@month.Days.Count(d => !d.IsSkipped && d.TotalMinutes.HasValue && d.TotalMinutes < 360)</span>
+            </div>
+            <div class="ms-item">
+                <span class="ms-label">Late Arrivals</span>
+                <span class="ms-val" style="color:var(--rose)">@mLate</span>
+            </div>
+            <div class="ms-item">
+                <span class="ms-label">Early Leave</span>
+                <span class="ms-val" style="color:var(--amber)">@mEarly</span>
+            </div>
+            <div class="ms-item">
+                <span class="ms-label">Overtime Days</span>
+                <span class="ms-val" style="color:var(--accent2)">@mOT</span>
+            </div>
+            <div class="ms-item">
+                <span class="ms-label">Perfect Days</span>
+                <span class="ms-val" style="color:var(--green)">@mPerf</span>
+            </div>
+        </div>
+
+        <div class="table-wrap">
+            <table id="tbl-@($"{month.Year}-{month.Month}")">
+                <thead>
+                    <tr>
+                        <th onclick="sortTable(this,0)">Date</th>
+                        <th>Day</th>
+                        <th>Floor</th>
+                        <th onclick="sortTable(this,3)">First In</th>
+                        <th onclick="sortTable(this,4)">Last Out</th>
+                        <th>Sessions</th>
+                        <th onclick="sortTable(this,6)">Total Time</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var day in month.Days)
+                    {
+                        double? mins = day.TotalMinutes;
+                        var fi2 = day.Pairs.FirstOrDefault(p => p.In.HasValue)?.In;
+                        var lo2 = day.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out;
+                        bool isLate    = !day.IsSkipped && fi2.HasValue && fi2.Value > officeStart;
+                        bool isEarly   = !day.IsSkipped && lo2.HasValue && lo2.Value < getOfficeEnd(day.Date);
+                        bool isOT      = !day.IsSkipped && lo2.HasValue && lo2.Value > getOfficeEnd(day.Date);
+                        bool isPerfect = !day.IsSkipped && fi2.HasValue && lo2.HasValue && fi2.Value <= officeStart && lo2.Value >= getOfficeEnd(day.Date) && day.TotalMinutes >= getOfficeTotalMin(day.Date);
+
+                        <tr class="@(day.IsSkipped ? "skipped" : "")"
+                            data-total="@(mins.HasValue ? mins.Value.ToString("F0", System.Globalization.CultureInfo.InvariantCulture) : "-1")">
+                            <td class="td-date">@day.Date.ToString("dd MMM yy")</td>
+                            <td class="td-day">@day.Date.ToString("ddd")</td>
+                            <td class="td-floor">@day.Floor</td>
+                            <td><span style="font-family:var(--mono);font-size:.82rem;color:var(--green)">@day.FirstIn</span></td>
+                            <td><span style="font-family:var(--mono);font-size:.82rem;color:var(--rose)">@day.LastOut</span></td>
+                            <td>
+                                @if (day.IsSkipped)
+                                {
+                                    <span class="skipped-badge">incomplete pair</span>
+                                }
+                                else
+                                {
+                                    <div class="pairs-cell">
+                                        @foreach (var pair in day.Pairs)
+                                        {
+                                            <span class="pair-chip @(!pair.IsComplete ? "incomplete" : "")">
+                                                <span class="tin">@pair.InDisplay</span>
+                                                <span class="arr">→</span>
+                                                <span class="tout">@pair.OutDisplay</span>
+                                            </span>
+                                        }
+                                    </div>
+                                }
+                            </td>
+                            <td>
+                                @if (day.IsSkipped)
+                                {
+                                    <span style="color:var(--muted);font-family:var(--mono);font-size:.78rem">—</span>
+                                }
+                                else
+                                {
+                                    <div class="total-cell">
+                                        <span style="color:@barColor(mins)">@day.TotalDisplay</span>
+                                        <div class="bar-wrap">
+                                            <div class="bar-fill" style="width:@barWidth(mins)%;background:@barColor(mins)"></div>
+                                        </div>
+                                    </div>
+                                }
+                            </td>
+                            <td>
+                                @if (!day.IsSkipped)
+                                {
+                                    if (isPerfect)
+                                    {
+                                        <span class="status-badge perfect">✓ Perfect</span>
+                                    }
+                                    else
+                                    {
+                                        if (isLate)   { var lb = fi2!.Value - officeStart;            <span class="status-badge late">▲ Late @((int)lb.TotalMinutes)m</span> }
+                                        if (isEarly)  { var eb = getOfficeEnd(day.Date) - lo2!.Value; <span class="status-badge early">▼ Early @((int)eb.TotalMinutes)m</span> }
+                                        if (isOT)     { var ob = lo2!.Value - getOfficeEnd(day.Date); <span class="status-badge ot">+ OT @((int)ob.TotalMinutes)m</span> }
+                                        if (!isLate && !isEarly && !isOT) { <span class="status-badge ontime">✓ On Time</span> }
+                                    }
+                                }
+                                else
+                                {
+                                    <span style="color:var(--muted);font-family:var(--mono);font-size:.75rem">—</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+                <tfoot>
+                    <tr class="avg-row">
+                        <td colspan="7">
+                            ⌀ &nbsp; Monthly Average — @month.MonthLabel
+                            <span style="color:var(--muted);font-weight:400">&nbsp;(@month.ValidDayCount valid days)</span>
+                        </td>
+                        <td>@month.AverageDisplay</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </section>
+}
+</div>
+
+@section Scripts {
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<!-- Razor → JS data bridge -->
+<script>
+    window.__emp__  = { name: '@Html.Raw(Model.EmployeeName)', code: '@Html.Raw(Model.EmployeeCode)' };
+    window.__meta__ = {
+        period:       '@(Model.Months.First().Days.Min(d => d.Date).ToString("dd MMM yyyy")) → @(Model.Months.Last().Days.Max(d => d.Date).ToString("dd MMM yyyy"))',
+        totalDays:    @Model.TotalWorkDays,
+        totalHours:   '@totalHours.ToString("F0")',
+        overallAvg:   '@Model.OverallAverageDisplay',
+        maxStreak:    @maxStreak,
+        countGreen:   @countGreen,
+        countAmber:   @countAmber,
+        countRose:    @countRose,
+        skipped:      @Model.TotalSkipped,
+        countLate:    @countLate,
+        countEarly:   @countEarlyLeave,
+        countOnTime:  @countOnTime,
+        countPerfect: @countPerfect,
+        countOT:      @countOvertime,
+        totalOT:      '@totalOvertimeDisplay',
+        compliance:   '@complianceRate.ToString("F0", System.Globalization.CultureInfo.InvariantCulture)',
+        exportDate:   '@DateTime.Now.ToString("yyyyMMdd")'
+    };
+    window.__months__ = [
+        @foreach (var month in Model.Months)
+        {
+            double ar   = month.TotalDays > 0 ? (month.ValidDayCount * 100.0 / month.TotalDays) : 0;
+            int    ml   = month.Days.Count(d => !d.IsSkipped && d.Pairs.Count > 0 && d.Pairs[0].In.HasValue && d.Pairs[0].In.Value > officeStart);
+            int    me   = month.Days.Count(d => { if (d.IsSkipped) return false; var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out; return lo.HasValue && lo.Value < getOfficeEnd(d.Date); });
+            int    mot  = month.Days.Count(d => { if (d.IsSkipped) return false; var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out; return lo.HasValue && lo.Value > getOfficeEnd(d.Date); });
+            int    mp   = month.Days.Count(d => { if (d.IsSkipped) return false; var fi = d.Pairs.FirstOrDefault(p => p.In.HasValue)?.In; var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out; return fi.HasValue && lo.HasValue && fi.Value <= officeStart && lo.Value >= getOfficeEnd(d.Date) && d.TotalMinutes >= getOfficeTotalMin(d.Date); });
+            <text>{
+            label:"@month.MonthLabel", validDays:@month.ValidDayCount, totalDays:@month.TotalDays,
+            attRate:"@ar.ToString("F0", System.Globalization.CultureInfo.InvariantCulture)",
+            avg:"@month.AverageDisplay", max:"@month.MaxDisplay", min:"@month.MinDisplay",
+            ge8:@month.Days.Count(d => !d.IsSkipped && d.TotalMinutes >= 480),
+            lt6:@month.Days.Count(d => !d.IsSkipped && d.TotalMinutes.HasValue && d.TotalMinutes < 360),
+            late:@ml, early:@me, ot:@mot, perfect:@mp,
+            days:[
+                @foreach (var day in month.Days)
+                {
+                    var _fi = day.Pairs.FirstOrDefault(p => p.In.HasValue)?.In;
+                    var _lo = day.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out;
+                    bool _late  = !day.IsSkipped && _fi.HasValue && _fi.Value > officeStart;
+                    bool _early = !day.IsSkipped && _lo.HasValue && _lo.Value < getOfficeEnd(day.Date);
+                    bool _ot    = !day.IsSkipped && _lo.HasValue && _lo.Value > getOfficeEnd(day.Date);
+                    bool _perf  = !day.IsSkipped && _fi.HasValue && _lo.HasValue && _fi.Value <= officeStart && _lo.Value >= getOfficeEnd(day.Date) && day.TotalMinutes >= getOfficeTotalMin(day.Date);
+                    string _st  = day.IsSkipped ? "Incomplete" : _perf ? "Perfect" : (_late && _early) ? "Late+Early" : _late ? "Late" : _early ? "Early Leave" : _ot ? "Overtime" : "On Time";
+                    <text>{
+                    date:"@day.Date.ToString("dd-MMM-yy")",day:"@day.Date.ToString("ddd")",floor:"@day.Floor",
+                    firstIn:"@day.FirstIn",lastOut:"@day.LastOut",total:"@day.TotalDisplay",
+                    skipped:@(day.IsSkipped?"true":"false"),status:"@_st",
+                    sessions:[@foreach(var pair in day.Pairs){<text>{i:"@pair.InDisplay",o:"@pair.OutDisplay"},</text>}]
+                    },</text>
+                }
+            ]},</text>
+        }
+    ];
+</script>
+
+<script>
+    // ── Chart defaults ──────────────────────────────────────────────────────
+    Chart.defaults.color = '#64748b';
+    Chart.defaults.font.family = "'DM Mono', monospace";
+    Chart.defaults.font.size = 11;
+    const gridColor  = 'rgba(37,43,66,.8)';
+    const accentRGBA = 'rgba(99,102,241,';
+
+    // ── 1. Daily trend ──────────────────────────────────────────────────────
+    new Chart(document.getElementById('trendChart'), {
+        type: 'line',
+        data: {
+            labels: [@Html.Raw(chartLabels)],
+            datasets: [{
+                label: 'Hours Worked',
+                data: [@Html.Raw(chartData)],
+                borderColor: '#818cf8',
+                backgroundColor: ctx => {
+                    const g = ctx.chart.ctx.createLinearGradient(0,0,0,220);
+                    g.addColorStop(0, accentRGBA+'.25)');
+                    g.addColorStop(1, accentRGBA+'0)');
+                    return g;
+                },
+                borderWidth:2, pointRadius:3, pointHoverRadius:6,
+                pointBackgroundColor:'#818cf8', tension:.35, fill:true
+            }]
+        },
+        options: {
+            responsive:true, maintainAspectRatio:false,
+            plugins: {
+                legend:{display:false},
+                tooltip:{callbacks:{label:ctx=>{const h=Math.floor(ctx.parsed.y);const m=Math.round((ctx.parsed.y-h)*60);return ` ${h}h ${String(m).padStart(2,'0')}m`;}}}
+            },
+            scales: {
+                x:{grid:{color:gridColor},ticks:{maxTicksLimit:12,maxRotation:45}},
+                y:{grid:{color:gridColor},min:0,max:12,ticks:{callback:v=>v+'h'}}
+            }
+        }
+    });
+
+    // ── 2. Donut ────────────────────────────────────────────────────────────
+    new Chart(document.getElementById('donutChart'), {
+        type: 'doughnut',
+        data: {
+            labels: ['≥ 8h (Full)','6–8h (Moderate)','< 6h (Short)'],
+            datasets:[{data:[@countGreen,@countAmber,@countRose],backgroundColor:['#22c55e','#f59e0b','#f43f5e'],borderColor:'#131726',borderWidth:3,hoverOffset:6}]
+        },
+        options:{responsive:true,maintainAspectRatio:false,cutout:'68%',plugins:{legend:{position:'bottom',labels:{padding:14,boxWidth:10,usePointStyle:true,pointStyle:'circle'}}}}
+    });
+
+    // ── 3. Monthly avg bar ──────────────────────────────────────────────────
+    new Chart(document.getElementById('monthBarChart'), {
+        type: 'bar',
+        data: {
+            labels:[@Html.Raw(monthLabels)],
+            datasets:[{label:'Avg Hours',data:[@Html.Raw(monthAvgData)],backgroundColor:accentRGBA+'.7)',borderColor:'#818cf8',borderWidth:1.5,borderRadius:6,hoverBackgroundColor:accentRGBA+'.9)'}]
+        },
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:gridColor}},y:{grid:{color:gridColor},min:0,max:12,ticks:{callback:v=>v+'h'}}}}
+    });
+
+    // ── 4. Punctuality scatter ──────────────────────────────────────────────
+    const punctLabelsArr = [@Html.Raw(punctLabels)];
+    const punctDataArr   = [@Html.Raw(punctData)];
+    new Chart(document.getElementById('punctChart'), {
+        type: 'scatter',
+        data: {
+            datasets:[{
+                label:'Arrival',
+                data:punctDataArr.map((y,i)=>({x:i,y})),
+                backgroundColor:ctx=>(ctx.raw?.y??601)<=600?'#22c55e99':'#f43f5e99',
+                pointRadius:4,pointHoverRadius:7
+            },{
+                label:'10:00 ref',
+                data:punctDataArr.map((_,i)=>({x:i,y:600})),
+                type:'line',borderColor:'rgba(244,63,94,.4)',borderDash:[4,3],
+                borderWidth:1.5,pointRadius:0,fill:false
+            }]
+        },
+        options:{
+            responsive:true,maintainAspectRatio:false,
+            plugins:{legend:{display:false},tooltip:{callbacks:{
+                title:ctx=>punctLabelsArr[ctx[0].parsed.x]||'',
+                label:ctx=>{if(ctx.dataset.label==='10:00 ref')return '10:00 office start';const h=Math.floor(ctx.parsed.y/60);const m=ctx.parsed.y%60;return ` Arrived ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;}
+            }}},
+            scales:{x:{display:false},y:{grid:{color:gridColor},ticks:{callback:v=>{const h=Math.floor(v/60);const m=v%60;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;},stepSize:30}}}
+        }
+    });
+
+    // ── 5. Compliance breakdown bar ─────────────────────────────────────────
+    new Chart(document.getElementById('complianceChart'), {
+        type: 'bar',
+        data: {
+            labels:['Perfect','On Time','Late','Early Leave','Overtime','Skipped'],
+            datasets:[{
+                data:[@countPerfect,@countOnTime,@countLate,@countEarlyLeave,@countOvertime,@Model.TotalSkipped],
+                backgroundColor:['#22c55e','#818cf8','#f43f5e','#f59e0b','#6366f1','#475569'],
+                borderRadius:6,borderWidth:0
+            }]
+        },
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:gridColor}},y:{grid:{color:gridColor},ticks:{stepSize:1}}}}
+    });
+
+    // ── Month filter ────────────────────────────────────────────────────────
+    function filterMonth(key, btn) {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.querySelectorAll('.month-section').forEach(sec => {
+            sec.classList.toggle('hidden', key !== 'all' && sec.dataset.month !== key);
+        });
+    }
+
+    // ── Column sort ─────────────────────────────────────────────────────────
+    function sortTable(th, colIdx) {
+        const table = th.closest('table');
+        const tbody = table.querySelector('tbody');
+        const rows  = Array.from(tbody.querySelectorAll('tr'));
+        const asc   = !th.classList.contains('sort-asc');
+        table.querySelectorAll('thead th').forEach(t => t.classList.remove('sort-asc','sort-desc'));
+        th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+        rows.sort((a,b) => {
+            if (colIdx === 6) {
+                return asc
+                    ? parseFloat(a.dataset.total??'-1') - parseFloat(b.dataset.total??'-1')
+                    : parseFloat(b.dataset.total??'-1') - parseFloat(a.dataset.total??'-1');
+            }
+            const av = a.cells[colIdx]?.innerText.trim()??'';
+            const bv = b.cells[colIdx]?.innerText.trim()??'';
+            return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+        });
+        rows.forEach(r => tbody.appendChild(r));
+    }
+
+    // ── Excel export (SheetJS) ──────────────────────────────────────────────
+    function exportExcel() {
+        const wb = XLSX.utils.book_new();
+        const e  = window.__emp__;
+        const m  = window.__meta__;
+
+        // Sheet 1 — Summary
+        const sumRows = [
+            ['Attendance Report Summary'],
+            [],
+            ['Employee',      e.name],
+            ['Employee Code', e.code],
+            ['Period',        m.period],
+            [],
+            ['── Overall Stats ──'],
+            ['Total Work Days',       m.totalDays],
+            ['Total Hours Worked',    m.totalHours + 'h'],
+            ['Overall Daily Average', m.overallAvg],
+            ['Best Streak',           m.maxStreak + ' days'],
+            ['Days ≥ 8h',             m.countGreen],
+            ['Days 6–8h',             m.countAmber],
+            ['Days < 6h',             m.countRose],
+            ['Skipped / Incomplete',  m.skipped],
+            [],
+            ['── Office Compliance (Mon–Fri 10:00–19:00 · Sat 10:00–17:00) ──'],
+            ['Late Arrivals',         m.countLate],
+            ['Early Departures',      m.countEarly],
+            ['On-Time Days',          m.countOnTime],
+            ['Perfect Days',          m.countPerfect],
+            ['Overtime Days',         m.countOT],
+            ['Total Overtime',        m.totalOT],
+            ['Compliance Rate',       m.compliance + '%'],
+            [],
+            ['── Monthly Breakdown ──'],
+            ['Month','Valid','Total','Att%','Avg','Best','Shortest','≥8h','<6h','Late','Early','OT','Perfect']
+        ];
+        window.__months__.forEach(mo => sumRows.push([
+            mo.label,mo.validDays,mo.totalDays,mo.attRate+'%',
+            mo.avg,mo.max,mo.min,mo.ge8,mo.lt6,mo.late,mo.early,mo.ot,mo.perfect
+        ]));
+        const wsSummary = XLSX.utils.aoa_to_sheet(sumRows);
+        wsSummary['!cols'] = [{wch:30},{wch:10},{wch:10},{wch:8},{wch:14},{wch:14},{wch:14},{wch:7},{wch:7},{wch:7},{wch:7},{wch:7},{wch:9}];
+        wsSummary['!merges'] = [{s:{r:0,c:0},e:{r:0,c:5}}];
+        XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+
+        // Sheets per month
+        window.__months__.forEach(mo => {
+            const maxPairs = Math.max(...mo.days.map(d=>d.sessions.length), 1);
+            const hdr = ['Date','Day','Floor','First In','Last Out'];
+            for (let p=1;p<=maxPairs;p++) hdr.push('In '+p,'Out '+p);
+            hdr.push('Sessions','Total Time','Status');
+
+            const rows = [
+                [mo.label + ' — Attendance Detail'],
+                [e.name + '  (' + e.code + ')'],
+                [],
+                ['Avg',mo.avg,'Best',mo.max,'Shortest',mo.min,'Att%',mo.attRate+'%','Late',mo.late,'Early',mo.early,'OT',mo.ot,'Perfect',mo.perfect],
+                [],
+                hdr
+            ];
+            mo.days.forEach(day => {
+                const row = [day.date,day.day,day.floor,day.firstIn,day.lastOut];
+                for (let p=0;p<maxPairs;p++) row.push(day.sessions[p]?.i??'',day.sessions[p]?.o??'');
+                row.push(
+                    day.sessions.filter(s=>s.i&&s.o&&s.i!=='—'&&s.o!=='—').length,
+                    day.skipped?'—':day.total,
+                    day.status
+                );
+                rows.push(row);
+            });
+            rows.push([],['Monthly Average ('+mo.validDays+' valid days)',...Array(hdr.length-2).fill(''),mo.avg,'']);
+
+            const ws = XLSX.utils.aoa_to_sheet(rows);
+            const cols = [{wch:14},{wch:6},{wch:8},{wch:10},{wch:10}];
+            for (let p=0;p<maxPairs;p++) cols.push({wch:8},{wch:8});
+            cols.push({wch:10},{wch:14},{wch:14});
+            ws['!cols'] = cols;
+            ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:5}},{s:{r:1,c:0},e:{r:1,c:5}}];
+            XLSX.utils.book_append_sheet(wb, ws, mo.label.replace(' ','-').substring(0,31));
+        });
+
+        XLSX.writeFile(wb, 'Attendance_' + e.code + '_' + m.exportDate + '.xlsx');
+    }
+</script>
+}

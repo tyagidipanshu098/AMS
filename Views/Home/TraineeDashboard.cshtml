@@ -1,0 +1,611 @@
+@model (YourApp.Models.AttendanceViewModel Attendance, YourApp.Models.TraineeSettings Settings)
+@{
+    ViewData["Title"] = "Trainee Eligibility Dashboard";
+
+    var att  = Model.Attendance;
+    var cfg  = Model.Settings;
+
+    // ── Reuse same office-hour helpers as main dashboard ────────────────────
+    TimeSpan officeStart      = new TimeSpan(10, 0, 0);
+    TimeSpan officeEndWeekday = new TimeSpan(19, 0, 0);
+    TimeSpan officeEndSat     = new TimeSpan(17, 0, 0);
+    Func<DateTime, TimeSpan> getOfficeEnd      = (dt) => dt.DayOfWeek == DayOfWeek.Saturday ? officeEndSat : officeEndWeekday;
+    Func<DateTime, int>      getOfficeTotalMin = (dt) => dt.DayOfWeek == DayOfWeek.Saturday ? 420 : 540;
+
+    // ── All valid days ───────────────────────────────────────────────────────
+    var allValidDays = att.Months
+        .SelectMany(m => m.Days)
+        .Where(d => !d.IsSkipped && d.TotalMinutes.HasValue)
+        .OrderBy(d => d.Date)
+        .ToList();
+
+    var allDays = att.Months.SelectMany(m => m.Days).OrderBy(d => d.Date).ToList();
+
+    // ── Global stats ─────────────────────────────────────────────────────────
+    int   totalValidDays  = allValidDays.Count;
+    int   totalDays       = allDays.Count;
+    int   totalSkipped    = att.TotalSkipped;
+    double totalHours     = allValidDays.Sum(d => d.TotalMinutes!.Value) / 60.0;
+    double overallAvgHrs  = totalValidDays > 0 ? (allValidDays.Sum(d => d.TotalMinutes!.Value) / 60.0) / totalValidDays : 0;
+    double attendancePct  = totalDays > 0 ? (totalValidDays * 100.0 / totalDays) : 0;
+
+    int countLate = allValidDays.Count(d =>
+        d.Pairs.Count > 0 && d.Pairs[0].In.HasValue && d.Pairs[0].In.Value > officeStart);
+
+    int countEarlyLeave = allValidDays.Count(d => {
+        var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out;
+        return lo.HasValue && lo.Value < getOfficeEnd(d.Date);
+    });
+
+    int countPerfect = allValidDays.Count(d => {
+        var fi = d.Pairs.FirstOrDefault(p => p.In.HasValue)?.In;
+        var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out;
+        return fi.HasValue && lo.HasValue && fi.Value <= officeStart && lo.Value >= getOfficeEnd(d.Date) && d.TotalMinutes >= getOfficeTotalMin(d.Date);
+    });
+
+    // ── Per-check evaluation ─────────────────────────────────────────────────
+    // Each check: (label, actual-display, required-display, passed, enabled, progress 0-100)
+    var checks = new List<(string Key, string Label, string Actual, string Required, bool Passed, bool Enabled, double Progress, string Color)>();
+
+    // 1. Attendance %
+    if (cfg.MinAttendancePct.HasValue) {
+        bool p = attendancePct >= cfg.MinAttendancePct.Value;
+        checks.Add(("att", "Attendance Rate",
+            $"{attendancePct:F1}%", $"≥ {cfg.MinAttendancePct:F1}%",
+            p, true,
+            Math.Min(100, attendancePct / cfg.MinAttendancePct.Value * 100),
+            p ? "#22c55e" : "#f43f5e"));
+    }
+
+    // 2. Avg daily hours
+    if (cfg.MinAvgDailyHours.HasValue) {
+        bool p = overallAvgHrs >= cfg.MinAvgDailyHours.Value;
+        int ah = (int)overallAvgHrs, am = (int)((overallAvgHrs % 1) * 60);
+        int rh = (int)cfg.MinAvgDailyHours.Value, rm = (int)((cfg.MinAvgDailyHours.Value % 1) * 60);
+        checks.Add(("hrs", "Avg Daily Hours",
+            $"{ah}h {am:D2}m", $"≥ {rh}h {rm:D2}m",
+            p, true,
+            Math.Min(100, overallAvgHrs / cfg.MinAvgDailyHours.Value * 100),
+            p ? "#22c55e" : "#f43f5e"));
+    }
+
+    // 3. Late arrivals
+    if (cfg.MaxLateArrivals.HasValue) {
+        bool p = countLate <= cfg.MaxLateArrivals.Value;
+        double prog = cfg.MaxLateArrivals.Value == 0 ? (countLate == 0 ? 0 : 100)
+            : Math.Min(100, countLate * 100.0 / cfg.MaxLateArrivals.Value);
+        checks.Add(("late", "Late Arrivals",
+            $"{countLate} days", $"≤ {cfg.MaxLateArrivals} days",
+            p, true, prog,
+            p ? "#22c55e" : "#f43f5e"));
+    }
+
+    // 4. Early departures
+    if (cfg.MaxEarlyDepartures.HasValue) {
+        bool p = countEarlyLeave <= cfg.MaxEarlyDepartures.Value;
+        double prog = cfg.MaxEarlyDepartures.Value == 0 ? (countEarlyLeave == 0 ? 0 : 100)
+            : Math.Min(100, countEarlyLeave * 100.0 / cfg.MaxEarlyDepartures.Value);
+        checks.Add(("early", "Early Departures",
+            $"{countEarlyLeave} days", $"≤ {cfg.MaxEarlyDepartures} days",
+            p, true, prog,
+            p ? "#22c55e" : "#f43f5e"));
+    }
+
+    // 5. Skipped days
+    if (cfg.MaxSkippedDays.HasValue) {
+        bool p = totalSkipped <= cfg.MaxSkippedDays.Value;
+        double prog = cfg.MaxSkippedDays.Value == 0 ? (totalSkipped == 0 ? 0 : 100)
+            : Math.Min(100, totalSkipped * 100.0 / cfg.MaxSkippedDays.Value);
+        checks.Add(("skip", "Skipped / Incomplete",
+            $"{totalSkipped} days", $"≤ {cfg.MaxSkippedDays} days",
+            p, true, prog,
+            p ? "#22c55e" : "#f43f5e"));
+    }
+
+    // 6. Perfect days
+    if (cfg.MinPerfectDays.HasValue) {
+        bool p = countPerfect >= cfg.MinPerfectDays.Value;
+        checks.Add(("perf", "Perfect Days",
+            $"{countPerfect} days", $"≥ {cfg.MinPerfectDays} days",
+            p, true,
+            Math.Min(100, cfg.MinPerfectDays.Value == 0 ? 100 : countPerfect * 100.0 / cfg.MinPerfectDays.Value),
+            p ? "#22c55e" : "#f43f5e"));
+    }
+
+    int checksTotal  = checks.Count;
+    int checksPassed = checks.Count(c => c.Passed);
+    bool eligible    = checksTotal > 0 && checksPassed == checksTotal;
+    double eligScore = checksTotal > 0 ? (checksPassed * 100.0 / checksTotal) : 0;
+
+    // ── Per-month breakdown ──────────────────────────────────────────────────
+    // For each month: att%, avgHrs, late, early, perfect, skipped, verdict
+    var monthBreakdowns = att.Months.Select(month => {
+        var vdays = month.Days.Where(d => !d.IsSkipped && d.TotalMinutes.HasValue).ToList();
+        double mAtt  = month.TotalDays > 0 ? (month.ValidDayCount * 100.0 / month.TotalDays) : 0;
+        double mAvg  = vdays.Count > 0 ? vdays.Average(d => d.TotalMinutes!.Value) / 60.0 : 0;
+        int mLate    = vdays.Count(d => d.Pairs.Count > 0 && d.Pairs[0].In.HasValue && d.Pairs[0].In.Value > officeStart);
+        int mEarly   = vdays.Count(d => { var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out; return lo.HasValue && lo.Value < getOfficeEnd(d.Date); });
+        int mPerf    = vdays.Count(d => { var fi = d.Pairs.FirstOrDefault(p => p.In.HasValue)?.In; var lo = d.Pairs.LastOrDefault(p => p.Out.HasValue)?.Out; return fi.HasValue && lo.HasValue && fi.Value <= officeStart && lo.Value >= getOfficeEnd(d.Date) && d.TotalMinutes >= getOfficeTotalMin(d.Date); });
+
+        // Month-level pass/fail per enabled check
+        bool mAttOk   = !cfg.MinAttendancePct.HasValue   || mAtt  >= cfg.MinAttendancePct.Value;
+        bool mHrsOk   = !cfg.MinAvgDailyHours.HasValue   || mAvg  >= cfg.MinAvgDailyHours.Value;
+        bool mLateOk  = !cfg.MaxLateArrivals.HasValue     || mLate <= cfg.MaxLateArrivals.Value;
+        bool mEarlyOk = !cfg.MaxEarlyDepartures.HasValue  || mEarly<= cfg.MaxEarlyDepartures.Value;
+        bool mPerfOk  = !cfg.MinPerfectDays.HasValue      || mPerf >= (cfg.MinPerfectDays.Value / (double)cfg.TrainingMonths);
+        bool mVerdic  = mAttOk && mHrsOk && mLateOk && mEarlyOk && mPerfOk;
+
+        return new {
+            Label      = month.MonthLabel,
+            ValidDays  = month.ValidDayCount,
+            TotalDays  = month.TotalDays,
+            AttPct     = mAtt,
+            AvgHrs     = mAvg,
+            Late       = mLate,
+            Early      = mEarly,
+            Perfect    = mPerf,
+            Skipped    = month.SkippedCount,
+            AttOk      = mAttOk,
+            HrsOk      = mHrsOk,
+            LateOk     = mLateOk,
+            EarlyOk    = mEarlyOk,
+            PerfOk     = mPerfOk,
+            Verdict    = mVerdic
+        };
+    }).ToList();
+
+    // ── Chart data ───────────────────────────────────────────────────────────
+    string mLabels      = string.Join(",", att.Months.Select(m => $"\"{m.MonthLabel}\""));
+    string mAttData     = string.Join(",", monthBreakdowns.Select(m => m.AttPct.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)));
+    string mAvgHrsData  = string.Join(",", monthBreakdowns.Select(m => m.AvgHrs.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)));
+    string mLateData    = string.Join(",", monthBreakdowns.Select(m => m.Late.ToString()));
+    string mEarlyData   = string.Join(",", monthBreakdowns.Select(m => m.Early.ToString()));
+    string mPerfData    = string.Join(",", monthBreakdowns.Select(m => m.Perfect.ToString()));
+    string mSkipData    = string.Join(",", monthBreakdowns.Select(m => m.Skipped.ToString()));
+}
+
+<div id="traineePrintArea">
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header class="td-header fade-in">
+    <div class="td-header-left">
+        <span class="td-eyebrow">Trainee Evaluation</span>
+        <span class="td-name">@att.EmployeeName</span>
+        <span class="td-code">@att.EmployeeCode &nbsp;·&nbsp; @cfg.TrainingMonths-Month Training Period</span>
+    </div>
+    <div class="td-header-right">
+        <span class="td-period">
+            @att.Months.First().Days.Min(d => d.Date).ToString("dd MMM yyyy")
+            &nbsp;→&nbsp;
+            @att.Months.Last().Days.Max(d => d.Date).ToString("dd MMM yyyy")
+        </span>
+        <a href="@Url.Action("TraineeSettings", "Home")" class="btn-settings no-print">
+            <svg viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            Settings
+        </a>
+        <button class="btn-export no-print" onclick="exportReport()">
+            <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6zm-1 1.5L18.5 9H13V3.5zM8 17.5l1.5-2.5L8 12.5h1.3l.95 1.7.95-1.7H12.5l-1.5 2.5 1.5 2.5h-1.3l-.95-1.7-.95 1.7H8zm6.5 0V12.5h1.1v4h2.2v.95H14.5z"/></svg>
+            Export Report
+        </button>
+    </div>
+</header>
+
+<!-- ── Eligibility verdict banner ─────────────────────────────────────── -->
+<div class="verdict-banner @(eligible ? "verdict-pass" : "verdict-fail") fade-in" style="animation-delay:40ms">
+    <div class="verdict-icon">
+        @if (eligible) {
+            <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        } else {
+            <svg viewBox="0 0 24 24"><path d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        }
+    </div>
+    <div class="verdict-body">
+        <div class="verdict-title">@(eligible ? "ELIGIBLE FOR PERMANENT EMPLOYMENT" : "NOT ELIGIBLE FOR PERMANENT EMPLOYMENT")</div>
+        <div class="verdict-sub">
+            @checksPassed of @checksTotal checks passed
+            @if (!eligible) {
+                <span>&nbsp;·&nbsp; @(checksTotal - checksPassed) requirement@(checksTotal - checksPassed == 1 ? "" : "s") not met</span>
+            }
+        </div>
+    </div>
+    <div class="verdict-score">
+        <div class="verdict-score-val">@eligScore.ToString("F0")%</div>
+        <div class="verdict-score-lbl">score</div>
+    </div>
+</div>
+
+<!-- ── Quick stats row ────────────────────────────────────────────────── -->
+<div class="td-stats-row fade-in" style="animation-delay:80ms">
+    <div class="td-stat">
+        <span class="td-stat-label">Total Valid Days</span>
+        <span class="td-stat-val accent">@totalValidDays</span>
+    </div>
+    <div class="td-stat">
+        <span class="td-stat-label">Attendance Rate</span>
+        <span class="td-stat-val @(cfg.MinAttendancePct.HasValue && attendancePct < cfg.MinAttendancePct.Value ? "rose" : "green")">@attendancePct.ToString("F1")%</span>
+    </div>
+    <div class="td-stat">
+        <span class="td-stat-label">Avg Daily Hours</span>
+        <span class="td-stat-val @(cfg.MinAvgDailyHours.HasValue && overallAvgHrs < cfg.MinAvgDailyHours.Value ? "rose" : "green")">
+                @((int)overallAvgHrs)h @(((int)((overallAvgHrs % 1) * 60)).ToString("D2"))m
+
+        </span>
+    </div>
+    <div class="td-stat">
+        <span class="td-stat-label">Late Arrivals</span>
+        <span class="td-stat-val @(cfg.MaxLateArrivals.HasValue && countLate > cfg.MaxLateArrivals.Value ? "rose" : "amber")">@countLate</span>
+    </div>
+    <div class="td-stat">
+        <span class="td-stat-label">Early Departures</span>
+        <span class="td-stat-val @(cfg.MaxEarlyDepartures.HasValue && countEarlyLeave > cfg.MaxEarlyDepartures.Value ? "rose" : "amber")">@countEarlyLeave</span>
+    </div>
+    <div class="td-stat">
+        <span class="td-stat-label">Perfect Days</span>
+        <span class="td-stat-val @(cfg.MinPerfectDays.HasValue && countPerfect < cfg.MinPerfectDays.Value ? "rose" : "green")">@countPerfect</span>
+    </div>
+    <div class="td-stat">
+        <span class="td-stat-label">Skipped Rows</span>
+        <span class="td-stat-val @(cfg.MaxSkippedDays.HasValue && totalSkipped > cfg.MaxSkippedDays.Value ? "rose" : "muted")">@totalSkipped</span>
+    </div>
+    <div class="td-stat">
+        <span class="td-stat-label">Total Hours</span>
+        <span class="td-stat-val accent">@totalHours.ToString("F0")h</span>
+    </div>
+</div>
+
+<!-- ── Eligibility checklist ──────────────────────────────────────────── -->
+<div class="td-section fade-in" style="animation-delay:120ms">
+    <div class="td-section-title">
+        <svg viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+        Eligibility Checklist
+    </div>
+
+    @if (checksTotal == 0)
+    {
+        <div class="td-empty">No checks configured. <a href="@Url.Action("TraineeSettings", "Home")">Go to Settings →</a></div>
+    }
+    else
+    {
+        <div class="checklist">
+            @foreach (var c in checks)
+            {
+                double barPct = c.Key == "late" || c.Key == "early" || c.Key == "skip"
+                    ? c.Progress   // for "max" checks, bar fills = usage vs limit
+                    : c.Progress;  // for "min" checks, bar fills = actual vs required
+                <div class="check-item @(c.Passed ? "check-pass" : "check-fail")">
+                    <div class="check-icon">
+                        @if (c.Passed) {
+                            <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
+                        } else {
+                            <svg viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12"/></svg>
+                        }
+                    </div>
+                    <div class="check-body">
+                        <div class="check-top">
+                            <span class="check-label">@c.Label</span>
+                            <span class="check-badge @(c.Passed ? "badge-pass" : "badge-fail")">
+                                @(c.Passed ? "MET" : "NOT MET")
+                            </span>
+                        </div>
+                        <div class="check-values">
+                            <span class="check-actual" style="color:@c.Color">@c.Actual</span>
+                            <span class="check-sep">vs required</span>
+                            <span class="check-required">@c.Required</span>
+                        </div>
+                        <div class="check-bar-wrap">
+                            <div class="check-bar-fill" style="width:@barPct.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%;background:@c.Color"></div>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+<!-- ── Charts row ─────────────────────────────────────────────────────── -->
+<div class="td-charts-row fade-in" style="animation-delay:160ms">
+    <div class="td-chart-card">
+        <div class="td-chart-title">Attendance % by Month</div>
+        <div class="td-chart-wrap"><canvas id="attChart"></canvas></div>
+    </div>
+    <div class="td-chart-card">
+        <div class="td-chart-title">Avg Daily Hours by Month</div>
+        <div class="td-chart-wrap"><canvas id="hrsChart"></canvas></div>
+    </div>
+    <div class="td-chart-card">
+        <div class="td-chart-title">Late · Early · Perfect by Month</div>
+        <div class="td-chart-wrap"><canvas id="compChart"></canvas></div>
+    </div>
+</div>
+
+<!-- ── Month-by-month breakdown table ────────────────────────────────── -->
+<div class="td-section fade-in" style="animation-delay:200ms">
+    <div class="td-section-title">
+        <svg viewBox="0 0 24 24"><path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+        Month-by-Month Breakdown
+    </div>
+    <div class="td-table-wrap">
+        <table class="td-table">
+            <thead>
+                <tr>
+                    <th>Month</th>
+                    <th>Valid / Total</th>
+                    <th>Att %</th>
+                    <th>Avg Hours</th>
+                    <th>Late</th>
+                    <th>Early Leave</th>
+                    <th>Perfect</th>
+                    <th>Skipped</th>
+                    <th>Month Verdict</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var mb in monthBreakdowns)
+                {
+                    int mh = (int)mb.AvgHrs, mm2 = (int)((mb.AvgHrs % 1) * 60);
+                    <tr>
+                        <td class="td-month-name">@mb.Label</td>
+                        <td class="mono">@mb.ValidDays / @mb.TotalDays</td>
+                        <td>
+                            <span class="@(mb.AttOk ? "td-ok" : "td-fail-txt")">@mb.AttPct.ToString("F1")%</span>
+                        </td>
+                        <td>
+                            <span class="@(mb.HrsOk ? "td-ok" : "td-fail-txt") mono">@mh h @mm2.ToString("D2")m</span>
+                        </td>
+                        <td>
+                            <span class="@(mb.LateOk ? "td-ok" : "td-fail-txt") mono">@mb.Late</span>
+                        </td>
+                        <td>
+                            <span class="@(mb.EarlyOk ? "td-ok" : "td-fail-txt") mono">@mb.Early</span>
+                        </td>
+                        <td>
+                            <span class="@(mb.PerfOk ? "td-ok" : "td-fail-txt") mono">@mb.Perfect</span>
+                        </td>
+                        <td class="mono muted">@mb.Skipped</td>
+                        <td>
+                            <span class="verdict-pill @(mb.Verdict ? "vp-pass" : "vp-fail")">
+                                @(mb.Verdict ? "✓ Pass" : "✗ Fail")
+                            </span>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ── Improvement notes (auto-generated for failed checks) ──────────── -->
+@if (!eligible)
+{
+    <div class="td-section td-remarks fade-in" style="animation-delay:240ms">
+        <div class="td-section-title">
+            <svg viewBox="0 0 24 24"><path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            Areas Requiring Improvement
+        </div>
+        <div class="remarks-list">
+            @foreach (var c in checks.Where(x => !x.Passed))
+            {
+                string tip = c.Key switch {
+                    "att"  => $"Attendance is at {checks.First(x=>x.Key=="att").Actual}, which is below the required {c.Required}. The trainee needs to improve daily presence.",
+                    "hrs"  => $"Average daily hours are {c.Actual}, below the requirement of {c.Required}. The trainee should ensure full shift completion each day.",
+                    "late" => $"Late arrivals ({c.Actual}) exceed the allowed limit of {c.Required}. The trainee must improve punctuality.",
+                    "early"=> $"Early departures ({c.Actual}) exceed the allowed {c.Required}. The trainee should complete full working hours each day.",
+                    "skip" => $"Skipped/incomplete records ({c.Actual}) exceed the limit of {c.Required}. Ensure proper punch-in and punch-out every day.",
+                    "perf" => $"Perfect days count ({c.Actual}) is below the minimum of {c.Required}. The trainee needs more days with on-time arrival and full shift completion.",
+                    _      => ""
+                };
+                <div class="remark-item">
+                    <span class="remark-dot"></span>
+                    <span class="remark-text">@tip</span>
+                </div>
+            }
+        </div>
+    </div>
+}
+    @{
+        // 1. Prepare the secondary dataset in C# first
+        string extraDataset = "";
+        if (cfg.MinAvgDailyHours.HasValue)
+        {
+            var val = cfg.MinAvgDailyHours.Value.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+            extraDataset = $@", {{
+        label: 'Required {cfg.MinAvgDailyHoursDisplay}',
+        data: mLabels.map(() => {val}),
+        type: 'line',
+        borderColor: 'rgba(244,63,94,.5)',
+        borderDash: [5,4],
+        borderWidth: 1.5,
+        pointRadius: 0,
+        fill: false
+        }}";
+        }
+
+    }
+    @{
+        string attRequiredDataset = "";
+        if (cfg.MinAttendancePct.HasValue)
+        {
+            var pctVal = cfg.MinAttendancePct.Value.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+            attRequiredDataset = $@", {{
+        label: 'Required {cfg.MinAttendancePctDisplay}',
+        data: mLabels.map(() => {pctVal}),
+        type: 'line',
+        borderColor: 'rgba(244,63,94,.5)',
+        borderDash: [5,4],
+        borderWidth: 1.5,
+        pointRadius: 0,
+        fill: false
+        }}";
+        }
+    }
+
+
+
+</div><!-- /#traineePrintArea -->
+
+@section Scripts {
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<script>
+    Chart.defaults.color = '#64748b';
+    Chart.defaults.font.family = "'DM Mono', monospace";
+    Chart.defaults.font.size = 11;
+    const gc = 'rgba(37,43,66,.8)';
+
+    const mLabels    = [@Html.Raw(mLabels)];
+    const attData    = [@Html.Raw(mAttData)];
+    const hrsData    = [@Html.Raw(mAvgHrsData)];
+    const lateData   = [@Html.Raw(mLateData)];
+    const earlyData  = [@Html.Raw(mEarlyData)];
+    const perfData   = [@Html.Raw(mPerfData)];
+
+    // Att % line — with threshold ref
+        new Chart(document.getElementById('attChart'), {
+            type: 'bar',
+            data: {
+                labels: mLabels,
+                datasets: [
+                    {
+                        label: 'Attendance %',
+                        data: attData,
+                        backgroundColor: attData.map(v => v >= @(cfg.MinAttendancePct?.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) ?? "0") ? 'rgba(34,197,94,.7)' : 'rgba(244,63,94,.7)'),
+                        borderRadius: 6,
+                        borderWidth: 0
+                    }
+                    @Html.Raw(attRequiredDataset)
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { color: gc } },
+                    y: {
+                        grid: { color: gc },
+                        min: 0,
+                        max: 100,
+                        ticks: { callback: v => v + '%' }
+                    }
+                }
+            }
+        });
+
+
+    // Avg hrs bar — with threshold ref
+    new Chart(document.getElementById('hrsChart'), {
+        type: 'bar',
+        data: {
+            labels: mLabels,
+            datasets: [
+                {
+                    label: 'Avg Hours',
+                    data: hrsData,
+                    backgroundColor: hrsData.map(v => v >= @(cfg.MinAvgDailyHours?.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) ?? "0") ? 'rgba(129,140,248,.7)' : 'rgba(244,63,94,.7)'),
+                    borderRadius: 6,
+                    borderWidth: 0
+                }
+                @Html.Raw(extraDataset) // 2. Inject the whole string safely
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { grid: { color: gc } },
+                y: { grid: { color: gc }, min: 0, max: 12, ticks: { callback: v => v + 'h' } }
+            }
+        }
+    });
+
+
+    // Late / Early / Perfect grouped bar
+    new Chart(document.getElementById('compChart'), {
+        type: 'bar',
+        data: {
+            labels: mLabels,
+            datasets: [
+                { label:'Late',    data:lateData,  backgroundColor:'rgba(244,63,94,.7)',  borderRadius:4, borderWidth:0 },
+                { label:'Early',   data:earlyData, backgroundColor:'rgba(245,158,11,.7)', borderRadius:4, borderWidth:0 },
+                { label:'Perfect', data:perfData,  backgroundColor:'rgba(34,197,94,.7)',  borderRadius:4, borderWidth:0 }
+            ]
+        },
+        options: { responsive:true, maintainAspectRatio:false,
+            plugins:{ legend:{ position:'bottom', labels:{padding:14,boxWidth:10,usePointStyle:true,pointStyle:'circle'} } },
+            scales:{ x:{grid:{color:gc}}, y:{grid:{color:gc},ticks:{stepSize:1}} } }
+    });
+
+    // ── Excel export ────────────────────────────────────────────────────────
+    function exportReport() {
+        const wb = XLSX.utils.book_new();
+
+        // Sheet 1 — Eligibility Summary
+        const verdict = @(eligible ? "true" : "false");
+        const rows = [
+            ['Trainee Eligibility Report'],
+            [],
+            ['Employee',        '@Html.Raw(att.EmployeeName)'],
+            ['Employee Code',   '@Html.Raw(att.EmployeeCode)'],
+            ['Training Period', '@cfg.TrainingMonths months'],
+            ['Period',          '@att.Months.First().Days.Min(d => d.Date).ToString("dd MMM yyyy") → @att.Months.Last().Days.Max(d => d.Date).ToString("dd MMM yyyy")'],
+            [],
+            ['── Overall Verdict ──'],
+            ['Result',          verdict ? 'ELIGIBLE' : 'NOT ELIGIBLE'],
+            ['Score',           '@eligScore.ToString("F0")%'],
+            ['Checks Passed',   '@checksPassed / @checksTotal'],
+            [],
+            ['── Eligibility Checks ──'],
+            ['Check', 'Actual', 'Required', 'Status']
+        ];
+        @foreach (var c in checks) {
+            <text>rows.push(['@c.Label', '@c.Actual', '@c.Required', '@(c.Passed ? "MET" : "NOT MET")']);</text>
+        }
+        rows.push([]);
+        rows.push(['── Overall Stats ──']);
+        rows.push(['Total Valid Days',     @totalValidDays]);
+        rows.push(['Total Hours Worked',   '@totalHours.ToString("F0")h']);
+        rows.push(['Attendance Rate',      '@attendancePct.ToString("F1")%']);
+        rows.push(['Avg Daily Hours', '@((int)overallAvgHrs)h @(((int)((overallAvgHrs % 1) * 60)).ToString("D2"))m']);
+        rows.push(['Late Arrivals',        @countLate]);
+        rows.push(['Early Departures',     @countEarlyLeave]);
+        rows.push(['Perfect Days',         @countPerfect]);
+        rows.push(['Skipped / Incomplete', @totalSkipped]);
+        rows.push([]);
+        rows.push(['── Month Breakdown ──']);
+        rows.push(['Month','Valid','Total','Att%','Avg Hrs','Late','Early','Perfect','Skipped','Verdict']);
+        @foreach (var mb in monthBreakdowns) {
+            int mhx = (int)mb.AvgHrs, mmx = (int)((mb.AvgHrs % 1) * 60);
+            <text>rows.push(['@mb.Label', @mb.ValidDays, @mb.TotalDays, '@mb.AttPct.ToString("F1")%', '@mhx h @mmx.ToString("D2")m', @mb.Late, @mb.Early, @mb.Perfect, @mb.Skipped, '@(mb.Verdict ? "PASS" : "FAIL")']);</text>
+        }
+
+        @if (!eligible) {
+            <text>
+        rows.push([]);
+        rows.push(['── Improvement Notes ──']);
+            @foreach (var c in checks.Where(x => !x.Passed)) {
+                string tip2 = c.Key switch {
+                    "att"  => $"Attendance ({c.Actual}) is below required {c.Required}.",
+                    "hrs"  => $"Avg daily hours ({c.Actual}) is below required {c.Required}.",
+                    "late" => $"Late arrivals ({c.Actual}) exceed limit {c.Required}.",
+                    "early"=> $"Early departures ({c.Actual}) exceed limit {c.Required}.",
+                    "skip" => $"Skipped days ({c.Actual}) exceed limit {c.Required}.",
+                    "perf" => $"Perfect days ({c.Actual}) below required {c.Required}.",
+                    _      => ""
+                };
+                <text>rows.push(['@c.Label', '@tip2']);</text>
+            }
+            </text>
+        }
+
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+        ws['!cols'] = [{wch:32},{wch:16},{wch:16},{wch:12}];
+        ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:3}}];
+        XLSX.utils.book_append_sheet(wb, ws, 'Eligibility Report');
+
+        XLSX.writeFile(wb, 'TraineeReport_@(att.EmployeeCode)_@(DateTime.Now.ToString("yyyyMMdd")).xlsx');
+
+    }
+</script>
+}

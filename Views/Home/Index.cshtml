@@ -1,0 +1,81 @@
+@{
+    ViewData["Title"] = "Home";
+}
+
+
+<div class="home-wrap">
+
+    <!-- ── Info banner (shown when redirected back without a file) ──────── -->
+    @if (TempData["InfoMessage"] is string msg)
+    {
+        <div class="info-banner">
+            <svg viewBox="0 0 24 24"><path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            @msg
+        </div>
+    }
+
+    <!-- ── Upload card ──────────────────────────────────────────────────── -->
+    <div class="upload-card">
+        <span class="card-eyebrow">Attendance Management System</span>
+        <h1 class="card-title">Upload Report</h1>
+        <p class="card-sub">Select an Excel attendance file to generate the full dashboard.</p>
+
+        <hr class="card-divider" />
+
+        @using (Html.BeginForm("File", "Home", FormMethod.Post, new { enctype = "multipart/form-data" }))
+        {
+            @Html.AntiForgeryToken()
+
+            <label class="field-label" for="ExcelFile">Excel File</label>
+
+            <div class="file-drop" id="fileDrop">
+                <input type="file" name="ExcelFile" id="ExcelFile" accept=".xlsx,.xls" />
+                <div class="file-drop-icon">📂</div>
+                <div class="file-drop-body">
+                    <span class="file-drop-text">Click to browse or drag &amp; drop</span>
+                    <span class="file-drop-hint">.XLS &nbsp;·&nbsp; .XLSX</span>
+                    <span class="file-name-display" id="fileNameDisplay"></span>
+                </div>
+            </div>
+
+            <button type="submit" class="btn-upload">Generate Dashboard →</button>
+        }
+
+        <p class="card-note">Processed server-side &nbsp;·&nbsp; not stored permanently</p>
+    </div>
+
+    <!-- ── Quick-link cards ─────────────────────────────────────────────── -->
+    <div class="quick-links">
+
+        <a class="ql-card ql-trainee" href="@Url.Action("TraineeDashboard", "Home")">
+            <div class="ql-icon">
+                <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <div class="ql-body">
+                <span class="ql-label">Trainee Dashboard</span>
+                <span class="ql-desc">Eligibility evaluation</span>
+            </div>
+        </a>
+
+        <a class="ql-card ql-settings" href="@Url.Action("TraineeSettings", "Home")">
+            <div class="ql-icon">
+                <svg viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            </div>
+            <div class="ql-body">
+                <span class="ql-label">Settings</span>
+                <span class="ql-desc">Configure eligibility rules</span>
+            </div>
+        </a>
+
+    </div>
+
+</div>
+
+@section Scripts {
+<script>
+    document.getElementById('ExcelFile').addEventListener('change', function () {
+        var name = this.files.length > 0 ? this.files[0].name : '';
+        document.getElementById('fileNameDisplay').textContent = name ? '✓  ' + name : '';
+    });
+</script>
+}

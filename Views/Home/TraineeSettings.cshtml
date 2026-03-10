@@ -1,0 +1,226 @@
+@model YourApp.Models.TraineeSettings
+@{
+    ViewData["Title"] = "Trainee Eligibility Settings";
+}
+
+<div class="ts-wrap fade-in">
+
+    <!-- ── Page header ───────────────────────────────────────────────────── -->
+    <div class="ts-header">
+        <div class="ts-header-left">
+            <span class="ts-eyebrow">Configuration</span>
+            <h1 class="ts-title">Trainee Eligibility Settings</h1>
+            <p class="ts-sub">Define the requirements a trainee must meet to be eligible for permanent employment.</p>
+        </div>
+        <div class="ts-header-right">
+            <a href="@Url.Action("TraineeDashboard", "Home")" class="btn-secondary">
+                <svg viewBox="0 0 24 24"><path d="M3 12l9-9 9 9M5 10v9a1 1 0 001 1h4v-5h4v5h4a1 1 0 001-1v-9"/></svg>
+                View Dashboard
+            </a>
+        </div>
+    </div>
+
+    @if (TempData["Saved"] != null)
+    {
+        <div class="ts-alert ts-alert-success fade-in">
+            <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            Settings saved successfully.
+        </div>
+    }
+
+    <form method="post" action="@Url.Action("SaveTraineeSettings", "Home")">
+        @Html.AntiForgeryToken()
+
+        <div class="ts-grid">
+
+            <!-- ── Training Period ─────────────────────────────────────────── -->
+            <div class="ts-section">
+                <div class="ts-section-head">
+                    <div class="ts-section-icon" style="background:rgba(99,102,241,.15);color:#818cf8">
+                        <svg viewBox="0 0 24 24"><path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    </div>
+                    <div>
+                        <div class="ts-section-title">Training Period</div>
+                        <div class="ts-section-desc">Duration of the probationary / training period</div>
+                    </div>
+                </div>
+                <div class="ts-field-row">
+                    <div class="ts-field">
+                        <label class="ts-label" for="TrainingMonths">Training Duration</label>
+                        <div class="ts-input-wrap">
+                            <input type="number" id="TrainingMonths" name="TrainingMonths"
+                                   value="@Model.TrainingMonths" min="1" max="12" class="ts-input" />
+                            <span class="ts-unit">months</span>
+                        </div>
+                        <span class="ts-hint">Typically 3 months. Used to validate the data range.</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Attendance ─────────────────────────────────────────────── -->
+            <div class="ts-section">
+                <div class="ts-section-head">
+                    <div class="ts-section-icon" style="background:rgba(34,197,94,.12);color:#22c55e">
+                        <svg viewBox="0 0 24 24"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                    </div>
+                    <div>
+                        <div class="ts-section-title">Attendance &amp; Hours</div>
+                        <div class="ts-section-desc">Minimum presence and working time thresholds</div>
+                    </div>
+                </div>
+                <div class="ts-field-row">
+                    <div class="ts-field">
+                        <div class="ts-label-row">
+                            <label class="ts-label" for="MinAttendancePct">Min Attendance Rate</label>
+                            <label class="ts-toggle-wrap">
+                                <input type="checkbox" class="ts-toggle-chk" id="chk-att"
+                                       onchange="toggleField('MinAttendancePct',this)"
+                                       @(Model.MinAttendancePct.HasValue ? "checked" : "") />
+                                <span class="ts-toggle"></span>
+                            </label>
+                        </div>
+                        <div class="ts-input-wrap">
+                            <input type="number" id="MinAttendancePct" name="MinAttendancePct" step="0.5"
+                                   value="@(Model.MinAttendancePct?.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) ?? "")"
+                                   min="0" max="100" class="ts-input"
+                                   @(!Model.MinAttendancePct.HasValue ? "disabled" : "") />
+                            <span class="ts-unit">%</span>
+                        </div>
+                        <span class="ts-hint">Valid days ÷ total working days in period</span>
+                    </div>
+                    <div class="ts-field">
+                        <div class="ts-label-row">
+                            <label class="ts-label" for="MinAvgDailyHours">Min Avg Daily Hours</label>
+                            <label class="ts-toggle-wrap">
+                                <input type="checkbox" class="ts-toggle-chk" id="chk-hrs"
+                                       onchange="toggleField('MinAvgDailyHours',this)"
+                                       @(Model.MinAvgDailyHours.HasValue ? "checked" : "") />
+                                <span class="ts-toggle"></span>
+                            </label>
+                        </div>
+                        <div class="ts-input-wrap">
+                            <input type="number" id="MinAvgDailyHours" name="MinAvgDailyHours" step="0.25"
+                                   value="@(Model.MinAvgDailyHours?.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) ?? "")"
+                                   min="0" max="12" class="ts-input"
+                                   @(!Model.MinAvgDailyHours.HasValue ? "disabled" : "") />
+                            <span class="ts-unit">hrs</span>
+                        </div>
+                        <span class="ts-hint">Average across all valid working days</span>
+                    </div>
+                    <div class="ts-field">
+                        <div class="ts-label-row">
+                            <label class="ts-label" for="MaxSkippedDays">Max Skipped / Incomplete Days</label>
+                            <label class="ts-toggle-wrap">
+                                <input type="checkbox" class="ts-toggle-chk" id="chk-skip"
+                                       onchange="toggleField('MaxSkippedDays',this)"
+                                       @(Model.MaxSkippedDays.HasValue ? "checked" : "") />
+                                <span class="ts-toggle"></span>
+                            </label>
+                        </div>
+                        <div class="ts-input-wrap">
+                            <input type="number" id="MaxSkippedDays" name="MaxSkippedDays"
+                                   value="@(Model.MaxSkippedDays?.ToString() ?? "")"
+                                   min="0" max="99" class="ts-input"
+                                   @(!Model.MaxSkippedDays.HasValue ? "disabled" : "") />
+                            <span class="ts-unit">days</span>
+                        </div>
+                        <span class="ts-hint">Rows with missing punch-in or punch-out</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Compliance ─────────────────────────────────────────────── -->
+            <div class="ts-section">
+                <div class="ts-section-head">
+                    <div class="ts-section-icon" style="background:rgba(245,158,11,.12);color:#f59e0b">
+                        <svg viewBox="0 0 24 24"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    </div>
+                    <div>
+                        <div class="ts-section-title">Office Compliance</div>
+                        <div class="ts-section-desc">Punctuality and schedule adherence limits (office: Mon–Fri 10–19, Sat 10–17)</div>
+                    </div>
+                </div>
+                <div class="ts-field-row">
+                    <div class="ts-field">
+                        <div class="ts-label-row">
+                            <label class="ts-label" for="MaxLateArrivals">Max Late Arrivals</label>
+                            <label class="ts-toggle-wrap">
+                                <input type="checkbox" class="ts-toggle-chk" id="chk-late"
+                                       onchange="toggleField('MaxLateArrivals',this)"
+                                       @(Model.MaxLateArrivals.HasValue ? "checked" : "") />
+                                <span class="ts-toggle"></span>
+                            </label>
+                        </div>
+                        <div class="ts-input-wrap">
+                            <input type="number" id="MaxLateArrivals" name="MaxLateArrivals"
+                                   value="@(Model.MaxLateArrivals?.ToString() ?? "")"
+                                   min="0" max="99" class="ts-input"
+                                   @(!Model.MaxLateArrivals.HasValue ? "disabled" : "") />
+                            <span class="ts-unit">days</span>
+                        </div>
+                        <span class="ts-hint">Arrived after 10:00</span>
+                    </div>
+                    <div class="ts-field">
+                        <div class="ts-label-row">
+                            <label class="ts-label" for="MaxEarlyDepartures">Max Early Departures</label>
+                            <label class="ts-toggle-wrap">
+                                <input type="checkbox" class="ts-toggle-chk" id="chk-early"
+                                       onchange="toggleField('MaxEarlyDepartures',this)"
+                                       @(Model.MaxEarlyDepartures.HasValue ? "checked" : "") />
+                                <span class="ts-toggle"></span>
+                            </label>
+                        </div>
+                        <div class="ts-input-wrap">
+                            <input type="number" id="MaxEarlyDepartures" name="MaxEarlyDepartures"
+                                   value="@(Model.MaxEarlyDepartures?.ToString() ?? "")"
+                                   min="0" max="99" class="ts-input"
+                                   @(!Model.MaxEarlyDepartures.HasValue ? "disabled" : "") />
+                            <span class="ts-unit">days</span>
+                        </div>
+                        <span class="ts-hint">Left before office end time</span>
+                    </div>
+                    <div class="ts-field">
+                        <div class="ts-label-row">
+                            <label class="ts-label" for="MinPerfectDays">Min Perfect Days</label>
+                            <label class="ts-toggle-wrap">
+                                <input type="checkbox" class="ts-toggle-chk" id="chk-perf"
+                                       onchange="toggleField('MinPerfectDays',this)"
+                                       @(Model.MinPerfectDays.HasValue ? "checked" : "") />
+                                <span class="ts-toggle"></span>
+                            </label>
+                        </div>
+                        <div class="ts-input-wrap">
+                            <input type="number" id="MinPerfectDays" name="MinPerfectDays"
+                                   value="@(Model.MinPerfectDays?.ToString() ?? "")"
+                                   min="0" max="999" class="ts-input"
+                                   @(!Model.MinPerfectDays.HasValue ? "disabled" : "") />
+                            <span class="ts-unit">days</span>
+                        </div>
+                        <span class="ts-hint">On time + full shift (9h weekday / 7h Sat)</span>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ── Save bar ───────────────────────────────────────────────────── -->
+        <div class="ts-save-bar">
+            <span class="ts-save-note">Changes apply to all future trainee evaluations.</span>
+            <button type="submit" class="btn-primary">
+                <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
+                Save Settings
+            </button>
+        </div>
+
+    </form>
+</div>
+
+@section Scripts {
+<script>
+    function toggleField(id, chk) {
+        const input = document.getElementById(id);
+        input.disabled = !chk.checked;
+        if (!chk.checked) input.value = '';
+    }
+</script>
+}
